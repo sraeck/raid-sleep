@@ -5,6 +5,7 @@ import argparse
 import time
 import textwrap
 from subprocess import Popen, PIPE
+from psutil import disk_io_counters
 
 
 def parse_args():
@@ -75,26 +76,12 @@ def wake_up():
 
 
 def diskstats():
-    # see https://www.kernel.org/doc/Documentation/iostats.txt
-    #
-    columns = [
-        "major_dev_num", "minor_dev_num", "device",
-        "reads", "reads_merged", "sectors_read", "ms_reading",
-        "writes", "writes_merged", "sectors_written", "ms_writing",
-        "current_ios", "ms_doing_io", "weighted_ms_doing_io"
-    ]
-
     result = {}
-    for line in open("/proc/diskstats"):
-        parts = line.split()
-        if len(parts) < len(columns):
-            continue
+    ios = disk_io_counters(perdisk=True)
 
-        data = dict(list(zip(columns, parts)))
-
-        result["/dev/" + data["device"]] = {
-            k: int(v) for k, v in list(data.items()) if k != "device"
-        }
+    for dev in args.disk_devs:
+        dev = os.path.basename(dev)
+        result[dev] = str(ios[dev].read_bytes) + " " + str(ios[dev].write_bytes)
 
     return result
 
@@ -120,7 +107,6 @@ dprint(
 
 while True:
     stats = diskstats()
-    stats = {k: v for k, v in list(stats.items()) if k in args.disk_devs}
 
     now = time.time()
 
@@ -140,6 +126,9 @@ while True:
 
             dprint("Powering down after %s" % hms(now - last_standby))
             power_down()
+            # sleep or the disks are woken up during the next cycle
+            time.sleep(5)
+            stats = diskstats()
 
     old_stats = stats
     time.sleep(1)
