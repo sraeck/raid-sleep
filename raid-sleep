@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 #
+import re
 import os
 import argparse
 import time
 import textwrap
 from subprocess import Popen, PIPE
 from psutil import disk_io_counters
+from os import listdir
+from os.path import islink, join
 
 
 def parse_args():
@@ -47,7 +50,28 @@ def parse_args():
 
     args = parser.parse_args()
 
-    args.disk_devs = [os.path.realpath(d) for d in args.disk]
+    args.block_devs = [os.path.realpath(d) for d in args.disk]
+    args.disk_devs = set()
+
+    for d in args.block_devs:
+        dn = re.search( "[^/]+$", d ).group()
+        # RAID device /dev/md[0-9]
+        if re.search("^md[0-9]+$", dn):
+            # Find slave partitions in sysfs
+            syspath = "/sys/block/%s/slaves" % dn
+            slaves = [s for s in listdir(syspath) if islink(join(syspath, s))]
+            # Find drives for slave partitions
+            slaves = [re.search("^[^0-9]+", s).group() for s in slaves]
+            # Prepend /dev/
+            slaves = ["/dev/%s" % s for s in slaves]
+            args.disk_devs.update(slaves)
+        # Partition /dev/sd[a-z][0-9]
+        elif re.search("^sd[a-z][0-9]+$", dn):
+            disk = "/dev/%s" % re.search("^[^0-9]+", dn).group()
+            args.disk_devs.add(disk)
+        # Disk /dev/sd[a-z]
+        else:
+            args.disk_devs.add("/dev/%s" % dn)
 
 
 def dprint(*message):
@@ -79,7 +103,7 @@ def diskstats():
     result = {}
     ios = disk_io_counters(perdisk=True)
 
-    for dev in args.disk_devs:
+    for dev in args.block_devs:
         dev = os.path.basename(dev)
         result[dev] = str(ios[dev].read_bytes) + " " + str(ios[dev].write_bytes)
 
@@ -100,8 +124,8 @@ disk_state = 1
 parse_args()
 
 dprint(
-    "Monitoring %s. Timeout = %s" % (
-        ", ".join(args.disk_devs), hms(args.timeout)
+    "Monitoring %s using disks %s. Timeout = %s" % (
+        ", ".join(args.block_devs), ", ".join(args.disk_devs), hms(args.timeout)
     )
 )
 
@@ -119,6 +143,10 @@ while True:
             wake_up()
 
         last_access = now
+
+    #inactivity = int(now - last_access)
+    #if (inactivity % 60) == 0:
+    #    dprint("Inactivity for %s" % hms(inactivity))
 
     if now - last_access > args.timeout:
         if disk_state == 1:
